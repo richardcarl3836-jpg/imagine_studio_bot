@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 from collections import defaultdict
 from PIL import Image, ImageEnhance
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -497,6 +497,99 @@ async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     context.user_data["action"] = "generate_waiting"
 
+# ==================== GENERATION FUNCTION ====================
+
+async def generate_and_send_image(message, prompt: str, data: Dict, query: Optional[CallbackQuery] = None):
+    """Generate and send image"""
+    settings = data["settings"]
+    
+    size = IMAGE_SIZES.get(settings.get("size", "square"), IMAGE_SIZES["square"])
+    style = ART_STYLES.get(settings.get("style", "realistic"), ART_STYLES["realistic"])
+    theme = settings.get("theme", "vibrant")
+    
+    # Send processing message
+    if query:
+        processing = await query.edit_message_text(
+            f"🎨 **Generating your image...**\n\n"
+            f"📝 Prompt: {prompt[:80]}{'...' if len(prompt) > 80 else ''}\n"
+            f"🎨 Style: {style['label']}\n"
+            f"📐 Size: {size['label']}\n"
+            f"🌈 Theme: {theme.capitalize()}\n\n"
+            f"⏳ Please wait 10-20 seconds...",
+            parse_mode="Markdown"
+        )
+    else:
+        processing = await message.reply_text(
+            f"🎨 **Generating your image...**\n\n"
+            f"📝 Prompt: {prompt[:80]}{'...' if len(prompt) > 80 else ''}\n"
+            f"🎨 Style: {style['label']}\n"
+            f"📐 Size: {size['label']}\n"
+            f"🌈 Theme: {theme.capitalize()}\n\n"
+            f"⏳ Please wait 10-20 seconds...",
+            parse_mode="Markdown"
+        )
+    
+    try:
+        # Generate image
+        image_data = await generate_image(
+            prompt=prompt,
+            width=size["width"],
+            height=size["height"],
+            style=settings.get("style", "realistic"),
+            theme=settings.get("theme", "vibrant")
+        )
+        
+        if image_data and len(image_data) > 1000:
+            # Update stats
+            data["total_generated"] += 1
+            data["history"].append({
+                "prompt": prompt,
+                "style": settings.get("style", "realistic"),
+                "size": settings.get("size", "square"),
+                "theme": settings.get("theme", "vibrant"),
+                "timestamp": datetime.now().isoformat()
+            })
+            data["last_prompt"] = prompt
+            
+            # Send image
+            await message.reply_photo(
+                photo=io.BytesIO(image_data),
+                caption=(
+                    f"🎨 **Image Generated!**\n\n"
+                    f"📝 Prompt: {prompt[:150]}{'...' if len(prompt) > 150 else ''}\n"
+                    f"🎨 Style: {style['label']}\n"
+                    f"📐 Size: {size['label']}\n"
+                    f"🌈 Theme: {theme.capitalize()}\n"
+                    f"📊 Size: {len(image_data) // 1024} KB\n\n"
+                    f"🔄 Send a new prompt to create another!"
+                ),
+                parse_mode="Markdown",
+                reply_markup=get_generate_keyboard()
+            )
+            
+            await processing.delete()
+            
+        else:
+            await processing.edit_text(
+                "⚠️ **Generation Failed**\n\n"
+                "I couldn't create an image right now.\n\n"
+                "💡 **Tips:**\n"
+                "• Try a different prompt\n"
+                "• Use simpler words\n"
+                "• Try again in a moment",
+                parse_mode="Markdown",
+                reply_markup=get_main_keyboard()
+            )
+            
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        await processing.edit_text(
+            f"❌ **Error**\n\n"
+            f"Something went wrong. Please try again.",
+            parse_mode="Markdown",
+            reply_markup=get_main_keyboard()
+        )
+
 # ==================== CALLBACK HANDLERS ====================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -504,7 +597,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    user_id = str(update.effective_user.id)
+    user_id = str(query.from_user.id)
     data = get_user_data(user_id)
     settings = data["settings"]
     action = query.data
@@ -562,7 +655,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     elif action == "regenerate":
         if data.get("last_prompt"):
-            await generate_and_send_image(query.message, data["last_prompt"], data)
+            await generate_and_send_image(query.message, data["last_prompt"], data, query)
         else:
             await query.edit_message_text(
                 "❌ No previous image to regenerate.\n\n"
@@ -730,100 +823,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Generate image from idea
         await generate_and_send_image(query.message, prompt, data, query)
 
-# ==================== GENERATION FUNCTION ====================
-
-async def generate_and_send_image(message, prompt: str, data: Dict, query: CallbackQuery = None):
-    """Generate and send image"""
-    user_id = str(message.from_user.id)
-    settings = data["settings"]
-    
-    size = IMAGE_SIZES.get(settings.get("size", "square"), IMAGE_SIZES["square"])
-    style = ART_STYLES.get(settings.get("style", "realistic"), ART_STYLES["realistic"])
-    theme = settings.get("theme", "vibrant")
-    
-    # Send processing message
-    if query:
-        processing = await query.edit_message_text(
-            f"🎨 **Generating your image...**\n\n"
-            f"📝 Prompt: {prompt[:80]}{'...' if len(prompt) > 80 else ''}\n"
-            f"🎨 Style: {style['label']}\n"
-            f"📐 Size: {size['label']}\n"
-            f"🌈 Theme: {theme.capitalize()}\n\n"
-            f"⏳ Please wait 10-20 seconds...",
-            parse_mode="Markdown"
-        )
-    else:
-        processing = await message.reply_text(
-            f"🎨 **Generating your image...**\n\n"
-            f"📝 Prompt: {prompt[:80]}{'...' if len(prompt) > 80 else ''}\n"
-            f"🎨 Style: {style['label']}\n"
-            f"📐 Size: {size['label']}\n"
-            f"🌈 Theme: {theme.capitalize()}\n\n"
-            f"⏳ Please wait 10-20 seconds...",
-            parse_mode="Markdown"
-        )
-    
-    try:
-        # Generate image
-        image_data = await generate_image(
-            prompt=prompt,
-            width=size["width"],
-            height=size["height"],
-            style=settings.get("style", "realistic"),
-            theme=settings.get("theme", "vibrant")
-        )
-        
-        if image_data and len(image_data) > 1000:
-            # Update stats
-            data["total_generated"] += 1
-            data["history"].append({
-                "prompt": prompt,
-                "style": settings.get("style", "realistic"),
-                "size": settings.get("size", "square"),
-                "theme": settings.get("theme", "vibrant"),
-                "timestamp": datetime.now().isoformat()
-            })
-            data["last_prompt"] = prompt
-            
-            # Send image
-            await message.reply_photo(
-                photo=io.BytesIO(image_data),
-                caption=(
-                    f"🎨 **Image Generated!**\n\n"
-                    f"📝 Prompt: {prompt[:150]}{'...' if len(prompt) > 150 else ''}\n"
-                    f"🎨 Style: {style['label']}\n"
-                    f"📐 Size: {size['label']}\n"
-                    f"🌈 Theme: {theme.capitalize()}\n"
-                    f"📊 Size: {len(image_data) // 1024} KB\n\n"
-                    f"🔄 Send a new prompt to create another!"
-                ),
-                parse_mode="Markdown",
-                reply_markup=get_generate_keyboard()
-            )
-            
-            await processing.delete()
-            
-        else:
-            await processing.edit_text(
-                "⚠️ **Generation Failed**\n\n"
-                "I couldn't create an image right now.\n\n"
-                "💡 **Tips:**\n"
-                "• Try a different prompt\n"
-                "• Use simpler words\n"
-                "• Try again in a moment",
-                parse_mode="Markdown",
-                reply_markup=get_main_keyboard()
-            )
-            
-    except Exception as e:
-        logger.error(f"Error: {e}")
-        await processing.edit_text(
-            f"❌ **Error**\n\n"
-            f"Something went wrong. Please try again.",
-            parse_mode="Markdown",
-            reply_markup=get_main_keyboard()
-        )
-
 # ==================== MESSAGE HANDLERS ====================
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -852,7 +851,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # ===== GENERATE IMAGE =====
     
-    if action == "generate_waiting" or True:
+    if action == "generate_waiting":
         # Generate image from prompt
         await generate_and_send_image(update.message, text, data)
         context.user_data["action"] = None
